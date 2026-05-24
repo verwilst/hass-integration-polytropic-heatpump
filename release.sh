@@ -38,9 +38,15 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   exit 1
 fi
 
-if git tag | grep -q "^v${VERSION}$"; then
-  echo "Error: tag v${VERSION} already exists"
-  exit 1
+if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+  TAG_SHA=$(git rev-parse "v${VERSION}")
+  HEAD_SHA=$(git rev-parse HEAD)
+  if [[ "${TAG_SHA}" != "${HEAD_SHA}" ]]; then
+    echo "Error: tag v${VERSION} exists but points to ${TAG_SHA:0:8}, not HEAD (${HEAD_SHA:0:8})"
+    echo "  Delete the stale tag:  git tag -d v${VERSION} && git push origin :v${VERSION}"
+    exit 1
+  fi
+  echo "  (tag v${VERSION} already exists and matches HEAD, will reuse)"
 fi
 
 # ── Bump manifest.json ────────────────────────────────────────────────────────
@@ -75,7 +81,11 @@ fi
 # ── Tag & push ────────────────────────────────────────────────────────────────
 
 echo "→ Tagging v${VERSION} and pushing..."
-git tag "v${VERSION}"
+if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+  echo "  (tag already exists, skipping)"
+else
+  git tag "v${VERSION}"
+fi
 git push origin main
 git push origin "v${VERSION}"
 
@@ -88,29 +98,51 @@ echo "→ Building release ZIP..."
 # ── Create GitHub release ─────────────────────────────────────────────────────
 
 echo "→ Creating release on GitHub..."
-RESPONSE=$(jq -n \
-  --arg tag "v${VERSION}" \
-  --arg name "v${VERSION}" \
-  --arg body "${CHANGELOG_BODY}" \
-  '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: false}' \
-  | curl -s -X POST \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-    -H "Content-Type: application/json" \
-    "https://api.github.com/repos/${REPO}/releases" \
-    --data-binary @-)
+EXISTING=$(curl -s \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  "https://api.github.com/repos/${REPO}/releases/tags/v${VERSION}")
+RELEASE_ID=$(echo "${EXISTING}" | jq -r '.id // empty')
 
-RELEASE_ID=$(echo "${RESPONSE}" | jq -r '.id')
-UPLOAD_URL=$(echo "${RESPONSE}" | jq -r '.upload_url' | sed 's/{?name,label}//')
+if [[ -n "${RELEASE_ID}" ]]; then
+  echo "  (release v${VERSION} already exists, id=${RELEASE_ID}, reusing)"
+  UPLOAD_URL=$(echo "${EXISTING}" | jq -r '.upload_url' | sed 's/{?name,label}//')
+else
+  RESPONSE=$(jq -n \
+    --arg tag "v${VERSION}" \
+    --arg name "v${VERSION}" \
+    --arg body "${CHANGELOG_BODY}" \
+    '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: false}' \
+    | curl -s -X POST \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      -H "Content-Type: application/json" \
+      "https://api.github.com/repos/${REPO}/releases" \
+      --data-binary @-)
 
-if [[ -z "${RELEASE_ID}" || "${RELEASE_ID}" == "null" ]]; then
-  echo "Error: failed to create release"
-  echo "${RESPONSE}" | jq .
-  exit 1
+  RELEASE_ID=$(echo "${RESPONSE}" | jq -r '.id')
+  UPLOAD_URL=$(echo "${RESPONSE}" | jq -r '.upload_url' | sed 's/{?name,label}//')
+
+  if [[ -z "${RELEASE_ID}" || "${RELEASE_ID}" == "null" ]]; then
+    echo "Error: failed to create release"
+    echo "${RESPONSE}" | jq .
+    exit 1
+  fi
 fi
 
 # ── Upload ZIP asset ──────────────────────────────────────────────────────────
 
 echo "→ Uploading ZIP asset..."
+EXISTING_ASSET_ID=$(curl -s \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  "https://api.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets" \
+  | jq -r '.[] | select(.name == "polytropic_heatpump.zip") | .id' | head -n1)
+
+if [[ -n "${EXISTING_ASSET_ID}" ]]; then
+  echo "  (deleting stale asset ${EXISTING_ASSET_ID} before re-uploading)"
+  curl -s -X DELETE \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    "https://api.github.com/repos/${REPO}/releases/assets/${EXISTING_ASSET_ID}" >/dev/null
+fi
+
 curl -s -X POST \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
   -H "Content-Type: application/zip" \
@@ -118,7 +150,7 @@ curl -s -X POST \
   --data-binary "@${ZIPFILE}" \
   | jq -r '.browser_download_url'
 
-rm "${ZIPFILE}"
+rm -f "${ZIPFILE}"
 
 echo ""
 echo "✓ Released v${VERSION}: https://github.com/${REPO}/releases/tag/v${VERSION}"
