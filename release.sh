@@ -2,7 +2,7 @@
 set -euo pipefail
 
 VERSION=${1:?Usage: ./release.sh <version>  e.g. ./release.sh 1.0.0}
-REPO="verwilst/hass-polytropic-heatpump"
+REPO="verwilst/hass-integration-polytropic-heatpump"
 MANIFEST="custom_components/polytropic_heatpump/manifest.json"
 
 # ── Checks ────────────────────────────────────────────────────────────────────
@@ -34,19 +34,13 @@ if [[ -z "${GITHUB_TOKEN:-}" ]]; then
 fi
 
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "Error: uncommitted changes present, please commit first"
-  exit 1
-fi
-
-if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
-  TAG_SHA=$(git rev-parse "v${VERSION}")
-  HEAD_SHA=$(git rev-parse HEAD)
-  if [[ "${TAG_SHA}" != "${HEAD_SHA}" ]]; then
-    echo "Error: tag v${VERSION} exists but points to ${TAG_SHA:0:8}, not HEAD (${HEAD_SHA:0:8})"
-    echo "  Delete the stale tag:  git tag -d v${VERSION} && git push origin :v${VERSION}"
+  echo "Warning: uncommitted changes present"
+  git status --short
+  read -r -p "Proceed anyway? [y/N] " REPLY
+  if [[ ! "${REPLY}" =~ ^[Yy]$ ]]; then
+    echo "Aborted."
     exit 1
   fi
-  echo "  (tag v${VERSION} already exists and matches HEAD, will reuse)"
 fi
 
 # ── Bump manifest.json ────────────────────────────────────────────────────────
