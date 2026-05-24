@@ -140,28 +140,32 @@ class PolytropicClimate(CoordinatorEntity[PolytropicCoordinator], ClimateEntity)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
-            await self.coordinator.async_turn_off()
-        else:
-            # Keep current preset when switching mode
-            current_preset = self.preset_mode
-            mode_id = HVAC_PRESET_TO_MODE_ID.get(
-                (hvac_mode, current_preset),
-                HVAC_DEFAULT_MODE_ID.get(hvac_mode, 5),
-            )
-            await self.coordinator.async_set_mode(mode_id)
-            if not self.coordinator.data.get("unit_on", False):
-                await self.coordinator.async_turn_on()
+            await self.coordinator.async_set_control(on=False)
+            return
+        current_preset = self.preset_mode
+        mode_id = HVAC_PRESET_TO_MODE_ID.get(
+            (hvac_mode, current_preset),
+            HVAC_DEFAULT_MODE_ID.get(hvac_mode, 5),
+        )
+        unit_on = self.coordinator.data.get("unit_on", False)
+        await self.coordinator.async_set_control(
+            mode_id=mode_id,
+            on=True if not unit_on else None,
+        )
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
-        # Keep current HVAC mode when switching preset
-        current_hvac = self.hvac_mode
-        if current_hvac == HVACMode.OFF:
-            return
-        mode_id = HVAC_PRESET_TO_MODE_ID.get(
-            (current_hvac, preset_mode),
-            HVAC_DEFAULT_MODE_ID.get(current_hvac, 5),
+        # When unit is off, hvac_mode reports OFF but the stored mode_id still
+        # encodes the last active HVAC mode — use that so the preset change
+        # sticks and is honored on next turn-on.
+        stored_hvac, _ = MODE_ID_TO_HVAC_PRESET.get(
+            self._mode_id(), (HVACMode.HEAT, PRESET_NORMAL)
         )
-        await self.coordinator.async_set_mode(mode_id)
+        target_hvac = stored_hvac if stored_hvac != HVACMode.OFF else HVACMode.HEAT
+        mode_id = HVAC_PRESET_TO_MODE_ID.get(
+            (target_hvac, preset_mode),
+            HVAC_DEFAULT_MODE_ID.get(target_hvac, 5),
+        )
+        await self.coordinator.async_set_control(mode_id=mode_id)
 
     async def async_set_temperature(self, **kwargs) -> None:
         temp = kwargs.get("temperature")
