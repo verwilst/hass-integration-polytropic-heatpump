@@ -244,34 +244,35 @@ class PolytropicCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cached.update(updates)
         self.async_set_updated_data(self._cached)
 
-    async def async_set_control(
-        self,
-        *,
-        mode_id: int | None = None,
-        on: bool | None = None,
-    ) -> None:
-        """Update mode bits and/or on/off bit in a single FC 0x06 write."""
+    async def async_turn_on(self) -> None:
         ctrl = self._cached.get("control_word", 0)
-        new_ctrl = ctrl
-        if mode_id is not None:
-            new_ctrl = (new_ctrl & ~CTRL_MODE_MASK) | (mode_id & CTRL_MODE_MASK)
-        if on is not None:
-            new_ctrl = (new_ctrl | CTRL_ON_OFF) if on else (new_ctrl & ~CTRL_ON_OFF & 0xFFFF)
+        new_ctrl = ctrl | CTRL_ON_OFF
+        await self._write(REG_CONTROL_WORD, new_ctrl)
+        self._notify({
+            "control_word": new_ctrl,
+            "unit_on": True,
+            "mode_id": new_ctrl & CTRL_MODE_MASK,
+        })
+
+    async def async_turn_off(self) -> None:
+        ctrl = self._cached.get("control_word", 0)
+        new_ctrl = ctrl & ~CTRL_ON_OFF & 0xFFFF
+        await self._write(REG_CONTROL_WORD, new_ctrl)
+        self._notify({
+            "control_word": new_ctrl,
+            "unit_on": False,
+            "mode_id": new_ctrl & CTRL_MODE_MASK,
+        })
+
+    async def async_set_mode(self, mode_id: int) -> None:
+        ctrl = self._cached.get("control_word", 0)
+        new_ctrl = (ctrl & ~CTRL_MODE_MASK) | (mode_id & CTRL_MODE_MASK)
         await self._write(REG_CONTROL_WORD, new_ctrl)
         self._notify({
             "control_word": new_ctrl,
             "unit_on": bool(new_ctrl & CTRL_ON_OFF),
             "mode_id": new_ctrl & CTRL_MODE_MASK,
         })
-
-    async def async_turn_on(self) -> None:
-        await self.async_set_control(on=True)
-
-    async def async_turn_off(self) -> None:
-        await self.async_set_control(on=False)
-
-    async def async_set_mode(self, mode_id: int) -> None:
-        await self.async_set_control(mode_id=mode_id)
 
     async def async_set_target_temp(self, temp_c: float) -> None:
         clamped = round(max(25.0, min(60.0, temp_c)), 1)
